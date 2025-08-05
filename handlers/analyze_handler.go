@@ -39,14 +39,12 @@ func AnalyzeCardHandler(c *gin.Context) {
 	}
 	defer mat.Close()
 
-	// 5. Appeler votre logique de traitement (que vous placerez dans processing/image_processor.go)
 	rawName, err := processing.ExtractCardNameFromMat(mat)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erreur OCR: %v", err)})
 		return
 	}
 
-	// 6. Nettoyer le texte et appeler Scryfall
 	cleanName := strings.TrimSpace(rawName)
 	if cleanName == "" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Aucun nom de carte n'a pu être détecté"})
@@ -61,7 +59,5 @@ func AnalyzeCardHandler(c *gin.Context) {
 		})
 		return
 	}
-
-	// 7. Renvoyer les données de la carte en JSON
 	c.JSON(http.StatusOK, cardData)
 }
