@@ -58,31 +58,104 @@ func FindAndExtractCards(sourceMat gocv.Mat) ([]gocv.Mat, error) {
 	if sourceMat.Empty() {
 		return nil, fmt.Errorf("la Mat source est vide")
 	}
+
+	// on va déja corriger les reflets de lumière
+	grayForInpaint := gocv.NewMat()
+	defer grayForInpaint.Close()
+	gocv.CvtColor(sourceMat, &grayForInpaint, gocv.ColorBGRToGray)
+	reflectionMask := gocv.NewMat()
+	defer reflectionMask.Close()
+	gocv.Threshold(grayForInpaint, &reflectionMask, 240, 255, gocv.ThresholdBinary)
+	dilateKernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+	defer dilateKernel.Close()
+	gocv.Dilate(reflectionMask, &reflectionMask, dilateKernel)
+	// debug
+	gocv.IMWrite("debug_reflection_mask.png", reflectionMask)
+	inpaintedMat := gocv.NewMat()
+	defer inpaintedMat.Close()
+	// Le rayon de 5 pixels définit la zone voisine à utiliser pour la reconstruction.
+	gocv.Inpaint(sourceMat, reflectionMask, &inpaintedMat, 5, gocv.Telea)
 	// On mets en gris pour simplifier le ttt
 	// On pourrait voir pour gérer les couleurs pour aider l'algo a trouver les cartes
 	// par couleur mais pour l'instant tranquille
-	gray := gocv.NewMat()
-	defer gray.Close()
-	gocv.CvtColor(sourceMat, &gray, gocv.ColorBGRToGray)
+	/*
+		gray := gocv.NewMat()
+		defer gray.Close()
+		gocv.CvtColor(sourceMat, &gray, gocv.ColorBGRToGray)
 
-	blur := gocv.NewMat()
-	defer blur.Close()
-	// le blur pour réduire le bruit
-	gocv.GaussianBlur(gray, &blur, image.Point{X: 5, Y: 5}, 0, 0, gocv.BorderDefault)
+		blur := gocv.NewMat()
+		defer blur.Close()
+		// le blur pour réduire le bruit
+		gocv.GaussianBlur(gray, &blur, image.Point{X: 5, Y: 5}, 0, 0, gocv.BorderDefault)
 
-	canny := gocv.NewMat()
-	defer canny.Close()
-	// on utilise algo de canny pour contours
-	// a voir les seuils mais pour l'instant tranquille
-	gocv.Canny(blur, &canny, 75, 200)
+		canny := gocv.NewMat()
+		defer canny.Close()
+		// on utilise algo de canny pour contours
+		// a voir les seuils mais pour l'instant tranquille
+		gocv.Canny(blur, &canny, 100, 200)
 
+		// debug
+		gocv.IMWrite("debug_canny_output.png", canny)
+	*/ // Au final y a pas mal d'erreur par ce que le bords des cartes est blanc ou noir
+	// donc on va faire un prétraitement par canaux de couleur
+	channels := gocv.Split(inpaintedMat)
+	// On aura channels[0] = Bleu, channels[1] = Vert, channels[2] = Rouge
+	defer func() {
+		for _, c := range channels {
+			c.Close()
+		}
+	}()
+
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 3, Y: 3})
+	defer kernel.Close()
+
+	// Dilater chaque canal individuellement
+	dilatedB := gocv.NewMat()
+	dilatedG := gocv.NewMat()
+	dilatedR := gocv.NewMat()
+	defer dilatedB.Close()
+	defer dilatedG.Close()
+	defer dilatedR.Close()
+
+	gocv.Dilate(channels[0], &dilatedB, kernel)
+	gocv.Dilate(channels[1], &dilatedG, kernel)
+	gocv.Dilate(channels[2], &dilatedR, kernel)
+
+	maxIntensity := gocv.NewMat()
+	defer maxIntensity.Close()
+	gocv.Max(dilatedB, dilatedG, &maxIntensity)
+	gocv.Max(maxIntensity, dilatedR, &maxIntensity)
 	// debug
-	gocv.IMWrite("debug_canny_output.png", canny)
+	gocv.IMWrite("debug_max_intensity.png", maxIntensity)
+	minIntensity := gocv.NewMat()
+	defer minIntensity.Close()
+	gocv.Min(channels[0], channels[1], &minIntensity)
+	gocv.Min(minIntensity, channels[2], &minIntensity)
+	// debug
+	gocv.IMWrite("debug_min_intensity.png", minIntensity)
+	gradient := gocv.NewMat()
+	defer gradient.Close()
+	gocv.Subtract(maxIntensity, minIntensity, &gradient)
+	//debug
+	gocv.IMWrite("debug_gradient.png", gradient)
+	binaryEdges := gocv.NewMat()
+	defer binaryEdges.Close()
+	gocv.Threshold(gradient, &binaryEdges, 20, 255, gocv.ThresholdBinary)
+	//debug
+	gocv.IMWrite("debug_binary_edges.png", binaryEdges)
+
+	// on repare les contours après l'inpainting
+	closeKernel := gocv.GetStructuringElement(gocv.MorphRect, image.Point{X: 9, Y: 9})
+	defer closeKernel.Close()
+	closedEdges := gocv.NewMat()
+	defer closedEdges.Close()
+	gocv.MorphologyEx(binaryEdges, &closedEdges, gocv.MorphClose, closeKernel)
+	gocv.IMWrite("debug_closed_edges.png", closedEdges)
 
 	// après le prettt vraiment sommaire pour l'instant
 	// on essaye d'isoler les contours
 	// donc pour trouver un truc rectangulaire avec une forme de carte
-	contours := gocv.FindContours(canny, gocv.RetrievalExternal, gocv.ChainApproxSimple)
+	contours := gocv.FindContours(closedEdges, gocv.RetrievalExternal, gocv.ChainApproxSimple)
 	defer contours.Close()
 
 	var extractedCards []gocv.Mat
@@ -100,6 +173,29 @@ func FindAndExtractCards(sourceMat gocv.Mat) ([]gocv.Mat, error) {
 		// comme j'ai dit on cherche des rectangles
 		approx := gocv.ApproxPolyDP(contour, gocv.ArcLength(contour, true)*0.02, true)
 		if approx.Size() != 4 {
+			continue
+		}
+		// après quelque test je me retrouve parfois a juste topper le rectangle de texte
+		// plutot que la carte en entière
+		// on va filtrer le ratio via bounding box parce que la boite de texte est plus large que haute
+		boundingRect := gocv.BoundingRect(contour)
+
+		width := float64(boundingRect.Dx())
+		height := float64(boundingRect.Dy())
+		aspectRatio := 0.0
+		// debug
+		fmt.Printf("Ratio de la carte détectée: %.2f (largeur: %.2f, hauteur: %.2f)\n", width/height, width, height)
+		if width > height {
+			aspectRatio = width / height
+		} else {
+			aspectRatio = height / width
+		}
+		const minRatio = 1.10
+		const maxRatio = 2.20
+
+		if aspectRatio < minRatio || aspectRatio > maxRatio {
+			// debug
+			fmt.Printf("Contour rejeté : ratio d'aspect de %.2f hors de la plage [%.2f, %.2f]\n", aspectRatio, minRatio, maxRatio)
 			continue
 		}
 
