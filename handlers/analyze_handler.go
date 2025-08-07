@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CharlesNkdl/go-magic-image-analysis/processing"
@@ -42,32 +43,66 @@ func AnalyzeCardHandler(c *gin.Context) {
 	}
 	defer mat.Close()
 
-	rawName, err := processing.ExtractCardNameFromMat(mat)
+	extractedCards, err := processing.FindAndExtractCards(mat)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erreur OCR: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Erreur lors de la détection de cartes: %v", err)})
 		return
 	}
 
-	cleanName := strings.TrimSpace(rawName)
-	if cleanName == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Aucun nom de carte n'a pu être détecté"})
+	if len(extractedCards) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Aucune carte n'a pu être détectée dans l'image"})
 		return
 	}
+
+	// Traiter chaque carte détectée en parallèle pour plus de rapidité
+	var wg sync.WaitGroup
+	resultsChan := make(chan gin.H, len(extractedCards))
 	client := scryfall.NewClient()
 	cardService := client.Cards
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cardData, err := cardService.GetByName(ctx, &cards.NamedCardParams{
-		Fuzzy: &cleanName,
-	})
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":         fmt.Sprintf("Carte non trouvée sur Scryfall pour la recherche: '%s'", cleanName),
-			"detected_text": cleanName,
-		})
-		return
+	for i := range extractedCards {
+		wg.Add(1)
+		go func(cardMat gocv.Mat) {
+			defer wg.Done()
+			defer cardMat.Close() // Important de fermer chaque Mat extraite
+
+			rawName, err := processing.ExtractCardNameFromMat(cardMat)
+			if err != nil {
+				resultsChan <- gin.H{"status": "error", "error": fmt.Sprintf("Erreur OCR: %v", err)}
+				return
+			}
+
+			cleanName := strings.TrimSpace(rawName)
+			if cleanName == "" {
+				resultsChan <- gin.H{"status": "error", "error": "Aucun nom de carte n'a pu être détecté sur cette carte"}
+				return
+			}
+
+			cardData, err := cardService.GetByName(ctx, &cards.NamedCardParams{
+				Fuzzy: &cleanName,
+			})
+			if err != nil {
+				resultsChan <- gin.H{
+					"status":        "error",
+					"error":         fmt.Sprintf("Carte non trouvée sur Scryfall pour la recherche: '%s'", cleanName),
+					"detected_text": cleanName,
+				}
+				return
+			}
+			resultsChan <- gin.H{"status": "success", "data": cardData}
+		}(extractedCards[i])
 	}
-	c.JSON(http.StatusOK, cardData)
+
+	wg.Wait()
+	close(resultsChan)
+
+	var finalResults []gin.H
+	for result := range resultsChan {
+		finalResults = append(finalResults, result)
+	}
+
+	c.JSON(http.StatusOK, finalResults)
 }

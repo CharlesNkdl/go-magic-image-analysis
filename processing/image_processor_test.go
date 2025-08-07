@@ -1,6 +1,8 @@
 package processing
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,5 +37,43 @@ func TestExtractCardNameFromMat(t *testing.T) {
 				t.Logf("Succès ! Attendu: '%s', Obtenu: '%s'", expectedName, cleanedText)
 			}
 		})
+	}
+}
+
+func TestFindAndExtractCards(t *testing.T) {
+	imagePath := "../test_images/multiple_cards_2.jpg"
+	expectedCardCount := 3
+	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
+		t.Skipf("Fichier de test non trouvé, test ignoré: %s", imagePath)
+		return
+	}
+	sourceMat := gocv.IMRead(imagePath, gocv.IMReadColor)
+	if sourceMat.Empty() {
+		t.Fatalf("Impossible de lire l'image de test: %s", imagePath)
+	}
+	defer sourceMat.Close()
+	extractedCards, err := FindAndExtractCards(sourceMat)
+	if err != nil {
+		t.Fatalf("FindAndExtractCards a retourné une erreur: %v", err)
+	}
+	defer func() {
+		for _, m := range extractedCards {
+			m.Close()
+		}
+	}()
+	if len(extractedCards) != expectedCardCount {
+		t.Errorf("Nombre de cartes détectées incorrect. Attendu: %d, Obtenu: %d", expectedCardCount, len(extractedCards))
+	} else {
+		t.Logf("Succès ! %d cartes détectées comme attendu.", expectedCardCount)
+	}
+	outputDir := "../test_output"
+	os.Mkdir(outputDir, 0755)
+	for i, cardMat := range extractedCards {
+		outputPath := filepath.Join(outputDir, fmt.Sprintf("extracted_card_%d.png", i))
+		if ok := gocv.IMWrite(outputPath, cardMat); !ok {
+			t.Errorf("Impossible de sauvegarder la carte extraite %d", i)
+		} else {
+			t.Logf("Carte extraite sauvegardée dans %s", outputPath)
+		}
 	}
 }
