@@ -5,6 +5,7 @@ go 1.24.4
 require (
 	github.com/CharlesNkdl/go-scryfall-client v1.0.1
 	github.com/gin-gonic/gin v1.10.1
+	github.com/otiai10/gosseract/v2 v2.4.1
 	gocv.io/x/gocv v0.42.0
 )
 

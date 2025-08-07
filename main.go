@@ -11,5 +11,6 @@ func main() {
 	//router.POST("/")
 	// taille max a voir pour modif après
 	router.MaxMultipartMemory = 8 << 20
+	router.POST("/analyze", handlers.AnalyzeCardHandler)
 	router.Run(":8080")
 }

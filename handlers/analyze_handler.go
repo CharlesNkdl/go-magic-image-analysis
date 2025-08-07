@@ -1,13 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/CharlesNkdl/go-magic-image-analysis/processing"
 	scryfall "github.com/CharlesNkdl/go-scryfall-client/scryfall"
+	"github.com/CharlesNkdl/go-scryfall-client/scryfall/models/request/cards"
 
 	"github.com/gin-gonic/gin"
 	"gocv.io/x/gocv"
@@ -50,8 +53,15 @@ func AnalyzeCardHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Aucun nom de carte n'a pu être détecté"})
 		return
 	}
+	client := scryfall.NewClient()
+	cardService := client.Cards
 
-	cardData, err := scryfall.SearchCardFuzzy(cleanName)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cardData, err := cardService.GetByName(ctx, &cards.NamedCardParams{
+		Fuzzy: &cleanName,
+	})
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":         fmt.Sprintf("Carte non trouvée sur Scryfall pour la recherche: '%s'", cleanName),
